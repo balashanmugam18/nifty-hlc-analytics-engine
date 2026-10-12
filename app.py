@@ -7,9 +7,9 @@ import streamlit as st
 from backend.calculator import NiftyCalculatorEngine
 from services.transformer import DataTransformer
 
-st.set_page_config(
-    page_title="HLC Nifty Analysis Dashboard", layout="wide"
-)
+				   
+st.set_page_config(page_title="HLC Nifty Analysis Dashboard", layout="wide")
+ 
 
 CACHE_FILE = "server_cache_metrics.pkl"
 
@@ -160,6 +160,24 @@ if cached_data is None:
 else:
   m = cached_data["metrics"]
   excel_bytes = cached_data["excel_bytes"]
+  output_filename = m.get(
+      "output_filename", "Nifty_ATM_Analysis_20261012"
+  )  # e.g., "Nifty_ATM_Analysis_20261012"[cite: 1]
+
+  # Extract date string from filename and format it
+  try:
+    date_str_raw = output_filename.split("_")[-1]  # Grabs '20261012'
+    formatted_date = datetime.strptime(date_str_raw, "%Y%m%d").strftime(
+        "%d/%m/%Y"
+    )
+  except Exception:
+    formatted_date = m.get("formatted_expiry_str", "N/A")
+
+  # 📌 ACTIVE REPORT IDENTIFIER BANNER
+  st.success(
+      f"📊 **Active Analytics Report:** `{output_filename}`  \n🗓️ **Date:**"
+      f" `{formatted_date}`"
+  )
 
   st.markdown("---")
 
