@@ -376,12 +376,12 @@ class NiftyCalculatorEngine:
         'atm_pe_low': atm_pe_low,
         'atm_pe_status': atm_pe_status,
         'total_close_value': total_close_value,
+        'total_time_value': total_time_value,
         'max_resistance': max_resistance,
         'min_resistance': min_resistance,
         'change_in_pdc_val': change_in_pdc_val,
         'min_support': min_support,
         'max_support': max_support,
-        'total_time_value': total_time_value,  # 📌 Added key
         'weekly_labels': weekly_labels,
         'weekly_calculated_values': weekly_calculated_values,
         'final_sniper_atm': final_sniper_atm,
