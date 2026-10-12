@@ -213,6 +213,23 @@ class NiftyCalculatorEngine:
     max_resistance = atm_strike + total_close_value
     max_support = atm_strike - total_close_value
 
+    # 📌 Added Total Time Value Calculation
+    otm_ce_strike_for_tv = atm_strike - 50
+    otm_pe_strike_for_tv = atm_strike + 50
+    otm_ce_match = final_df[final_df['STRIKE_PRICE'] == otm_ce_strike_for_tv]
+    otm_pe_match = final_df[final_df['STRIKE_PRICE'] == otm_pe_strike_for_tv]
+    otm_ce_close_val = (
+        float(otm_ce_match['CE_CLOSE_VALUE'].iloc[0])
+        if not otm_ce_match.empty
+        else 0.0
+    )
+    otm_pe_close_val = (
+        float(otm_pe_match['PE_CLOSE_VALUE'].iloc[0])
+        if not otm_pe_match.empty
+        else 0.0
+    )
+    total_time_value = otm_ce_close_val + otm_pe_close_val - 100
+
     def calculate_status(high_price, close_price, low_price):
       diff_high_close = high_price - close_price
       diff_close_low = close_price - low_price
@@ -364,6 +381,7 @@ class NiftyCalculatorEngine:
         'change_in_pdc_val': change_in_pdc_val,
         'min_support': min_support,
         'max_support': max_support,
+        'total_time_value': total_time_value,  # 📌 Added key
         'weekly_labels': weekly_labels,
         'weekly_calculated_values': weekly_calculated_values,
         'final_sniper_atm': final_sniper_atm,

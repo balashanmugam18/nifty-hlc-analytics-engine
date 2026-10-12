@@ -184,10 +184,11 @@ else:
       "Metric": [
           "Maximum Resistance",
           "Minimum Resistance",
-          "Change in PDC",
+          "Change in Previous Day Close (PDC)",
           "Previous Day Close (PDC CAS)",
           "Minimum Support",
           "Maximum Support",
+          "Total Time Value",
       ],
       "Value": [
           m["max_resistance"],
@@ -196,6 +197,7 @@ else:
           m["nifty_close"],
           m["min_support"],
           m["max_support"],
+          m.get("total_time_value", 0.0),
       ],
   })
   st.table(key_metrics_df)
