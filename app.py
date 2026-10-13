@@ -180,6 +180,12 @@ else:
 
   # 1. KEY STRATEGY METRICS
   st.subheader("Key Strategy Metrics")
+  # Apply strikethrough to PDC CAS value only when Change in PDC is active
+  pdc_cas_display = (
+      f"~~{m['nifty_close']}~~"
+      if m["change_in_pdc_val"] != "---"
+      else m["nifty_close"]
+  )
   key_metrics_df = pd.DataFrame({
       "Metric": [
           "Maximum Resistance",
@@ -194,7 +200,7 @@ else:
           m["max_resistance"],
           m["min_resistance"],
           m["change_in_pdc_val"],
-          m["nifty_close"],
+          pdc_cas_display,
           m["min_support"],
           m["max_support"],
           m.get("total_time_value", 0.0),

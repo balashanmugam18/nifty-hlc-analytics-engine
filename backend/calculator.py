@@ -390,4 +390,5 @@ class NiftyCalculatorEngine:
         'ce_block_otm': ce_block_otm,
         'pe_block_atm': pe_block_atm,
         'pe_block_otm': pe_block_otm,
+        "final_df": final_df,
     }
