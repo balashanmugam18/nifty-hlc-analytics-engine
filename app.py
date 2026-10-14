@@ -84,7 +84,6 @@ def check_view_password():
 if not check_view_password():
     st.stop()
 
-
 # ==============================================================================
 # 2. MAIN APPLICATION CONTENT
 # ==============================================================================
@@ -181,147 +180,147 @@ else:
     excel_bytes = cached_data["excel_bytes"]
     output_filename = m.get("output_filename", "Nifty_ATM_Analysis_20261014")
 
-  # Extract date string from output_filename and format it strictly as DD/MM/YYYY
-  try:
+    # Extract date string from output_filename and format it strictly as DD/MM/YYYY
+try:
     clean_name = output_filename.split(".")[0]
     date_str_raw = clean_name.split("_")[-1]  # Grabs '20261012'
     formatted_date = datetime.strptime(date_str_raw, "%Y%m%d").strftime(
         "%d/%m/%Y"
     )
-  except Exception:
+except Exception:
     formatted_date = "N/A"
 
-  # 📌 ACTIVE REPORT IDENTIFIER BANNER
-  st.success(
-      f"📊 **Active Analytics Report:** `{output_filename}`  \n🗓️ **Date:**"
-      f" `{formatted_date}`"
-  )
+    # 📌 ACTIVE REPORT IDENTIFIER BANNER
+st.success(
+    f"📊 **Active Analytics Report:** `{output_filename}`  \n🗓️ **Date:**"
+    f" `{formatted_date}`"
+)
 
+st.markdown("---")
+
+# 1. KEY STRATEGY METRICS
+st.subheader("Key Strategy Metrics")
+
+# Apply strikethrough to PDC CAS value only when Change in PDC is active
+pdc_cas_display = (
+    f"~~{fmt(m['nifty_close'])}~~"
+    if m["change_in_pdc_val"] != "---"
+    else m["nifty_close"]
+)
+
+raw_key_values = [
+    m["max_resistance"],
+    m["min_resistance"],
+    m["change_in_pdc_val"],
+    pdc_cas_display,
+    m["min_support"],
+    m["max_support"],
+    m.get("total_time_value", 0.0),
+]
+
+key_metrics_df = pd.DataFrame({
+    "Metric": [
+        "Maximum Resistance",
+        "Minimum Resistance",
+        "Change in PDC",
+        "Previous Day Close (PDC CAS)",
+        "Minimum Support",
+        "Maximum Support",
+        "Total Time Value",
+    ],
+    "Value": [fmt(v) for v in raw_key_values],
+})
+st.table(key_metrics_df)
+
+st.markdown("---")
+
+# 2. HLC ATM LEVELS METRICS
+st.subheader("HLC ATM LEVELS Metrics")
+raw_hlc_values = [
+    m["atm_strike"],
+    m["atm_ce_close"],
+    m["atm_ce_high"],
+    m["atm_ce_low"],
+    m["atm_ce_status"],
+    m["atm_pe_close"],
+    m["atm_pe_high"],
+    m["atm_pe_low"],
+    m["atm_pe_status"],
+    m["total_close_value"],
+]
+
+hlc_atm_df = pd.DataFrame({
+    "Metric": [
+        "At-The-Money Strike (ATM)",
+        "ATM Call Close Value",
+        "ATM Call High Value",
+        "ATM Call Low Value",
+        "ATM Call Status",
+        "ATM Put Close Value",
+        "ATM Put High Value",
+        "ATM Put Low Value",
+        "ATM Put Status",
+        "Total Close Value (Straddle Premium)",
+    ],
+    "Value": [fmt(v) for v in raw_hlc_values],
+    "Expiry Date": [
+        m["formatted_expiry_str"] if i == 0 else "" for i in range(10)
+    ],
+})
+st.table(hlc_atm_df)
+
+st.markdown("---")
+
+# 3. WEEKLY RANGE METRICS
+if enable_weekly:
+    st.subheader("Weekly Range Metrics")
+    weekly_df = pd.DataFrame({
+        "Weekly Range Level": m["weekly_labels"],
+        "Calculated Value": [fmt(v) for v in m["weekly_calculated_values"]],
+    })
+    st.table(weekly_df)
     st.markdown("---")
 
-    # 1. KEY STRATEGY METRICS
-    st.subheader("Key Strategy Metrics")
+# 4. SNIPER LEVELS METRICS
+st.subheader("SNIPER LEVELS METRICS")
+sniper_col1, sniper_col2 = st.columns(2)
 
-    # Apply strikethrough to PDC CAS value only when Change in PDC is active
-    pdc_cas_display = (
-        f"~~{fmt(m['nifty_close'])}~~"
-        if m["change_in_pdc_val"] != "---"
-        else m["nifty_close"]
+with sniper_col1:
+    st.markdown(
+        f"**ATM strike price - {m['final_sniper_atm']} CE** | "
+        f" high - **{fmt(m['ce_block_atm']['CE_HIGH'])}** | "
+        f" close - **{fmt(m['ce_block_atm']['CE_CLOSE'])}**"
+    )
+    st.markdown(f"**sniper - {fmt(m['final_sniper_calculation'])}**")
+    st.markdown(
+        f"**ATM strike price - {m['final_sniper_atm']} PE** | "
+        f" high - **{fmt(m['pe_block_atm']['PE_HIGH'])}** | "
+        f" close - **{fmt(m['pe_block_atm']['PE_CLOSE'])}**"
+    )
+    st.markdown(f"**sniper - {fmt(m['final_sniper_calculation'])}**")
+
+with sniper_col2:
+    st.markdown(
+        f"**OTM strike price - {m['final_sniper_atm'] - 100} PE** | "
+        f" high - **{fmt(m['ce_block_otm']['PE_HIGH'])}** | "
+        f" close - **{fmt(m['ce_block_otm']['CE_CLOSE'])}**"
+    )
+    st.write("")
+    st.markdown(
+        f"**OTM strike price - {m['final_sniper_atm'] + 100} CE** | "
+        f" high - **{fmt(m['pe_block_otm']['CE_HIGH'])}** | "
+        f" close - **{fmt(m['pe_block_otm']['CE_CLOSE'])}**"
     )
 
-    raw_key_values = [
-        m["max_resistance"],
-        m["min_resistance"],
-        m["change_in_pdc_val"],
-        pdc_cas_display,
-        m["min_support"],
-        m["max_support"],
-        m.get("total_time_value", 0.0),
-    ]
+st.markdown("---")
 
-    key_metrics_df = pd.DataFrame({
-        "Metric": [
-            "Maximum Resistance",
-            "Minimum Resistance",
-            "Change in PDC",
-            "Previous Day Close (PDC CAS)",
-            "Minimum Support",
-            "Maximum Support",
-            "Total Time Value",
-        ],
-        "Value": [fmt(v) for v in raw_key_values],
-    })
-    st.table(key_metrics_df)
-
-    st.markdown("---")
-
-    # 2. HLC ATM LEVELS METRICS
-    st.subheader("HLC ATM LEVELS Metrics")
-    raw_hlc_values = [
-        m["atm_strike"],
-        m["atm_ce_close"],
-        m["atm_ce_high"],
-        m["atm_ce_low"],
-        m["atm_ce_status"],
-        m["atm_pe_close"],
-        m["atm_pe_high"],
-        m["atm_pe_low"],
-        m["atm_pe_status"],
-        m["total_close_value"],
-    ]
-
-    hlc_atm_df = pd.DataFrame({
-        "Metric": [
-            "At-The-Money Strike (ATM)",
-            "ATM Call Close Value",
-            "ATM Call High Value",
-            "ATM Call Low Value",
-            "ATM Call Status",
-            "ATM Put Close Value",
-            "ATM Put High Value",
-            "ATM Put Low Value",
-            "ATM Put Status",
-            "Total Close Value (Straddle Premium)",
-        ],
-        "Value": [fmt(v) for v in raw_hlc_values],
-        "Expiry Date": [
-            m["formatted_expiry_str"] if i == 0 else "" for i in range(10)
-        ],
-    })
-    st.table(hlc_atm_df)
-
-    st.markdown("---")
-
-    # 3. WEEKLY RANGE METRICS
-    if enable_weekly:
-        st.subheader("Weekly Range Metrics")
-        weekly_df = pd.DataFrame({
-            "Weekly Range Level": m["weekly_labels"],
-            "Calculated Value": [fmt(v) for v in m["weekly_calculated_values"]],
-        })
-        st.table(weekly_df)
-        st.markdown("---")
-
-    # 4. SNIPER LEVELS METRICS
-    st.subheader("SNIPER LEVELS METRICS")
-    sniper_col1, sniper_col2 = st.columns(2)
-
-    with sniper_col1:
-        st.markdown(
-            f"**ATM strike price - {m['final_sniper_atm']} CE** | "
-            f" high - **{fmt(m['ce_block_atm']['CE_HIGH'])}** | "
-            f" close - **{fmt(m['ce_block_atm']['CE_CLOSE'])}**"
-        )
-        st.markdown(f"**sniper - {fmt(m['final_sniper_calculation'])}**")
-        st.markdown(
-            f"**ATM strike price - {m['final_sniper_atm']} PE** | "
-            f" high - **{fmt(m['pe_block_atm']['PE_HIGH'])}** | "
-            f" close - **{fmt(m['pe_block_atm']['PE_CLOSE'])}**"
-        )
-        st.markdown(f"**sniper - {fmt(m['final_sniper_calculation'])}**")
-
-    with sniper_col2:
-        st.markdown(
-            f"**OTM strike price - {m['final_sniper_atm'] - 100} PE** | "
-            f" high - **{fmt(m['ce_block_otm']['PE_HIGH'])}** | "
-            f" close - **{fmt(m['ce_block_otm']['CE_CLOSE'])}**"
-        )
-        st.write("")
-        st.markdown(
-            f"**OTM strike price - {m['final_sniper_atm'] + 100} CE** | "
-            f" high - **{fmt(m['pe_block_otm']['CE_HIGH'])}** | "
-            f" close - **{fmt(m['pe_block_otm']['CE_CLOSE'])}**"
-        )
-
-    st.markdown("---")
-
-    # 5. EXCEL DOWNLOAD BUTTON
-    st.subheader("📥 Download Prepared Excel")
-    st.download_button(
-        label="Download Excel Output",
-        data=excel_bytes,
-        file_name=m["output_filename"],
-        mime=(
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        ),
-    )
+# 5. EXCEL DOWNLOAD BUTTON
+st.subheader("📥 Download Prepared Excel")
+st.download_button(
+    label="Download Excel Output",
+    data=excel_bytes,
+    file_name=m["output_filename"],
+    mime=(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    ),
+)
