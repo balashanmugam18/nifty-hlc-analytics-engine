@@ -2,9 +2,11 @@ name: Automated NSE Bhavcopy Fetcher
 
 on:
   schedule:
-    # Runs Monday to Friday at 02:30 UTC (= 08:00 AM IST) and 15:15 UTC (= 08:45 PM IST)
-    - cron: '10 21 * * 0-4'
+    # 1. Runs Monday to Friday at 03:10 AM IST (which is 21:40 UTC Sun-Thu)
+    - cron: '10 22 * * 0-4'
+    # 2. Runs Monday to Friday at 08:00 AM IST (which is 02:30 UTC Mon-Fri)
     - cron: '30 2 * * 1-5'
+    # 3. Runs Monday to Friday at 08:45 PM IST (which is 15:15 UTC Mon-Fri)
     - cron: '15 15 * * 1-5'
   workflow_dispatch: # Allows manual trigger from the GitHub Actions tab anytime
 
