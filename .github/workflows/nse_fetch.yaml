@@ -2,8 +2,8 @@ name: Automated NSE Bhavcopy Fetcher
 
 on:
   schedule:
-    # 1. Runs Monday to Friday at 03:40 AM IST (which is 22:10 UTC Sun-Thu)
-    - cron: '20 22 * * 0-4'
+    # 1. Runs Monday to Friday at 03:50 AM IST (which is 22:20 UTC Sun-Thu)
+    - cron: '22 22 * * 0-4'
     # 2. Runs Monday to Friday at 08:00 AM IST (which is 02:30 UTC Mon-Fri)
     - cron: '30 2 * * 1-5'
     # 3. Runs Monday to Friday at 08:45 PM IST (which is 15:15 UTC Mon-Fri)
