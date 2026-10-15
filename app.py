@@ -2,33 +2,15 @@ from datetime import datetime, timedelta
 import os
 import pickle
 import pandas as pd
+import pytz
 import streamlit as st
 
-from backend.calculator import NiftyCalculatorEngine
-from services.nse_scheduler import fetch_nse_bhavcopy_for_date, init_scheduler
-from services.transformer import DataTransformer
+from services.nse_scheduler import fetch_nse_bhavcopy_for_date, process_uploaded_bhavcopy_file
 
 st.set_page_config(page_title="HLC Nifty Analysis Dashboard", layout="wide")
 
-CACHE_FILE = "server_cache_metrics.pkl"
-
-# Initialize background scheduler safely
-try:
-    init_scheduler()
-except Exception as e:
-    print(f"Scheduler init note: {e}")
-
-
-def save_to_server_cache(metrics, excel_bytes, file_name, target_date_str):
-    data = {
-        "metrics": metrics,
-        "excel_bytes": excel_bytes,
-        "file_name": file_name,
-        "target_date": target_date_str,
-        "timestamp": datetime.now(),
-    }
-    with open(CACHE_FILE, "wb") as f:
-        pickle.dump(data, f)
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+CACHE_FILE = os.path.join(ROOT_DIR, "server_cache_metrics.pkl")
 
 
 def load_from_server_cache():
@@ -36,7 +18,8 @@ def load_from_server_cache():
         try:
             with open(CACHE_FILE, "rb") as f:
                 data = pickle.load(f)
-                if datetime.now() - data["timestamp"] > timedelta(hours=24):
+                ist = pytz.timezone('Asia/Kolkata')
+                if datetime.now(ist) - data["timestamp"] > timedelta(hours=24):
                     os.remove(CACHE_FILE)
                     return None
                 return data
@@ -130,47 +113,38 @@ else:
     st.success("🔓 Admin Authorized!")
 
     col1, col2 = st.columns(2)
+
+    # Manual Fetch Button (automatically respects the 20:45 IST cutoff rule)
     with col1:
-        if st.button("🚀 Fetch & Process Latest Bhavcopy from NSE Now"):
-            with st.spinner("Connecting to NSE and calculating metrics..."):
-                success, message = fetch_nse_bhavcopy_for_date(
-                    datetime.now(), enable_weekly_zone=enable_weekly
-                )
+        st.markdown("**Fetch Direct from NSE**")
+        if st.button("🚀 Fetch Latest Bhavcopy from NSE Now"):
+            with st.spinner("Checking cache and connecting to NSE..."):
+                success, message = fetch_nse_bhavcopy_for_date(enable_weekly_zone=enable_weekly)
                 if success:
                     st.success(message)
                     st.rerun()
                 else:
                     st.error(message)
 
+    # Manual Upload with explicit Process button & cache verification
     with col2:
+        st.markdown("**Upload Bhavcopy ZIP**")
         uploaded_file = st.file_uploader(
-            "Or Upload ZIP File", type=["zip"], key="bhav_uploader"
+            "Choose ZIP File", type=["zip"], key="bhav_uploader", label_visibility="collapsed"
         )
 
-    if uploaded_file is not None:
-        cached_data = load_from_server_cache()
-        if cached_data is None or cached_data.get("file_name") != uploaded_file.name:
-            try:
+        if uploaded_file is not None:
+            if st.button("📥 Process Uploaded File"):
                 with st.spinner("Processing uploaded Bhavcopy..."):
                     file_bytes = uploaded_file.read()
-                    engine = NiftyCalculatorEngine(
-                        file_bytes,
-                        enable_weekly_zone=enable_weekly,
-                        pdc_threshold=pdc_thresh,
+                    success, message = process_uploaded_bhavcopy_file(
+                        file_bytes, uploaded_file.name, enable_weekly_zone=enable_weekly, pdc_threshold=pdc_thresh
                     )
-                    metrics = engine.process_bhavcopy()
-
-                    transformer = DataTransformer(metrics)
-                    excel_bytes = transformer.generate_excel_bytes()
-
-                    date_str_tag = datetime.now().strftime("%Y%m%d")
-                    save_to_server_cache(
-                        metrics, excel_bytes, uploaded_file.name, date_str_tag
-                    )
-                    st.success("Bhavcopy processed successfully!")
-                    st.rerun()
-            except Exception as e:
-                st.error(f"Error processing file: {e}")
+                    if success:
+                        st.success(message)
+                        st.rerun()
+                    else:
+                        st.error(message)
 
 # ==============================================================================
 # 4. DASHBOARD UI DISPLAY
@@ -181,7 +155,7 @@ st.markdown("---")
 
 if cached_data is None:
     st.info(
-        "📌 **No Bhavcopy loaded yet. Click 'Fetch & Process Latest Bhavcopy from"
+        "📌 **No Bhavcopy loaded yet. Click 'Fetch Latest Bhavcopy from"
         " NSE Now' above or upload a ZIP file to view analytics.**"
     )
 else:
