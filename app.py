@@ -5,7 +5,7 @@ import pandas as pd
 import pytz
 import streamlit as st
 
-from services.nse_scheduler import fetch_nse_bhavcopy_for_date, process_uploaded_bhavcopy_file
+from services.nse_scheduler import fetch_nse_bhavcopy_for_date, process_uploaded_bhavcopy_file, load_cache
 
 st.set_page_config(page_title="HLC Nifty Analysis Dashboard", layout="wide")
 
@@ -305,3 +305,28 @@ else:
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ),
     )
+
+    # Inside app.py
+    metrics = load_cache().get("metrics", {})
+    threshold_met = metrics.get('sniper_threshold_met', True)
+    diag_rows = metrics.get('sniper_diag_rows', [])
+
+    show_debug_table = st.sidebar.checkbox("Show Sniper Difference Metrics (Fallback Analysis)",
+                                           value=not threshold_met)
+
+    if show_debug_table and diag_rows:
+        st.warning(
+            "⚠️ Sniper Strategy: Showing 6-Row Difference Metrics Matrix:")
+
+        diff_df = pd.DataFrame([
+            {
+                "Strike / Wing": row['strike_label'],
+                "Type": row['type'],
+                "Close Value": row['close'],
+                "Sniper Value": row['sniper_val'],
+                "Difference (Close - Sniper)": round(row['diff'], 2)
+            }
+            for row in diag_rows
+        ])
+
+        st.dataframe(diff_df, use_container_width=True, hide_index=True)

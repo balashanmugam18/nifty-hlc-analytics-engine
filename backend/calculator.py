@@ -314,6 +314,7 @@ class NiftyCalculatorEngine:
             line3 = weekly_atm_1 - atm_1_straddle
             line4 = weekly_atm_2 + atm_2_straddle
 
+            # Exact array sequence matching legacy version
             weekly_calculated_values = [
                 line4,          # Maximum Resistance
                 line1,          # Minimum Resistance
@@ -324,85 +325,98 @@ class NiftyCalculatorEngine:
         else:
             weekly_calculated_values = [None] * len(weekly_labels)
 
-        # Step 8: Execute Sniper Strategy calculation matrix with 50-Point Fallback
+        # Step 8: Execute Sniper Strategy calculation matrix (Exact Legacy Loop)
         logger.info("Executing Sniper Strategy calculations...")
         sniper_atm_base = int(round(nifty_close / 100.0) * 100)
 
         def fetch_row_metrics(strike_price):
             match = final_df[final_df['STRIKE_PRICE'] == strike_price]
             if match.empty:
-                return {'CE_CLOSE': 0.0, 'CE_HIGH': 0.0, 'PE_CLOSE': 0.0, 'PE_HIGH': 0.0}
+                return {"CE_CLOSE": 0.0, "CE_HIGH": 0.0, "PE_CLOSE": 0.0, "PE_HIGH": 0.0}
             return {
-                'CE_CLOSE': float(match['CE_CLOSE_VALUE'].iloc[0]),
-                'CE_HIGH': float(match['CE_HIGH_VALUE'].iloc[0]),
-                'PE_CLOSE': float(match['PE_CLOSE_VALUE'].iloc[0]),
-                'PE_HIGH': float(match['PE_HIGH_VALUE'].iloc[0]),
+                "CE_CLOSE": float(match['CE_CLOSE_VALUE'].iloc[0]),
+                "CE_HIGH": float(match['CE_HIGH_VALUE'].iloc[0]),
+                "PE_CLOSE": float(match['PE_CLOSE_VALUE'].iloc[0]),
+                "PE_HIGH": float(match['PE_HIGH_VALUE'].iloc[0])
             }
-
-        def check_strike_validity(strike, threshold=30.0):
-            otm_pe_metrics = fetch_row_metrics(strike - 100)
-            otm_ce_metrics = fetch_row_metrics(strike + 100)
-            sniper_val = (
-                                 otm_pe_metrics['PE_CLOSE'] + otm_ce_metrics['CE_CLOSE']
-                         ) / 2.0
-            atm_metrics = fetch_row_metrics(strike)
-            ce_diff = atm_metrics['CE_CLOSE'] - sniper_val
-            pe_diff = atm_metrics['PE_CLOSE'] - sniper_val
-            return (
-                (ce_diff >= threshold) and (pe_diff >= threshold),
-                sniper_val,
-                ce_diff,
-                pe_diff,
-            )
 
         current_atm = sniper_atm_base
         THRESHOLD = 30.0
+        max_iterations = 10
+        iteration = 0
         valid_strike_found = False
-        final_sniper_atm = sniper_atm_base
 
-        for _ in range(3):
-            is_valid, _, ce_diff, pe_diff = check_strike_validity(
-                current_atm, THRESHOLD
-            )
-            if is_valid:
-                final_sniper_atm = current_atm
+        while iteration < max_iterations:
+            otm_pe_metrics = fetch_row_metrics(current_atm - 100)
+            otm_ce_metrics = fetch_row_metrics(current_atm + 100)
+            current_sniper_val = (otm_pe_metrics["PE_CLOSE"] + otm_ce_metrics["CE_CLOSE"]) / 2.0
+
+            atm_metrics = fetch_row_metrics(current_atm)
+            ce_diff = atm_metrics["CE_CLOSE"] - current_sniper_val
+            pe_diff = atm_metrics['PE_CLOSE'] - current_sniper_val
+
+            if ce_diff >= THRESHOLD and pe_diff >= THRESHOLD:
                 valid_strike_found = True
-                logger.info(f"Sniper strike validated on Round Strike: {final_sniper_atm}")
                 break
-            current_atm = current_atm - 100 if ce_diff < pe_diff else current_atm + 100
 
-        if not valid_strike_found:
-            logger.info("3 consecutive round strikes failed threshold. Executing 50-point fallback check...")
-            for candidate in [
-                sniper_atm_base + 50,
-                sniper_atm_base - 50,
-                sniper_atm_base + 150,
-                sniper_atm_base - 150,
-            ]:
-                is_valid, _, _, _ = check_strike_validity(candidate, THRESHOLD)
-                if is_valid:
-                    final_sniper_atm = candidate
-                    valid_strike_found = True
-                    logger.info(f"Sniper strike validated on 50-Point Fallback Strike: {final_sniper_atm}")
-                    break
-            if not valid_strike_found:
-                final_sniper_atm = sniper_atm_base + 50
-                logger.info(f"No strike met criteria. Defaulting to base + 50 strike: {final_sniper_atm}")
+            if ce_diff < pe_diff:
+                current_atm -= 100
+            else:
+                current_atm += 100
 
-        # Correct block definitions for UI display matching ATM and OTM pairs
-        ce_block_atm = fetch_row_metrics(final_sniper_atm)
-        ce_block_otm = fetch_row_metrics(final_sniper_atm + 100)  # OTM Call strike (+100)
-        pe_block_atm = fetch_row_metrics(final_sniper_atm)
-        pe_block_otm = fetch_row_metrics(final_sniper_atm - 100)  # OTM Put strike (-100)
+            iteration += 1
 
-        # Fetch metrics explicitly for the calculation
-        otm_ce_metrics = ce_block_otm
-        otm_pe_metrics = pe_block_otm
+        final_sniper_atm = current_atm
 
-        # Correct Sniper calculation: (OTM CE Close + OTM PE Close) / 2
-        final_sniper_calculation = (
-                                           otm_ce_metrics['CE_CLOSE'] + otm_pe_metrics['PE_CLOSE']
-                                   ) / 2.0
+        # Set final strikes and lock metrics matching legacy layout mapping
+        final_atm_ce_strike = final_sniper_atm
+        final_otm_pe_strike = final_sniper_atm - 100
+
+        final_atm_pe_strike = final_sniper_atm
+        final_otm_ce_strike = final_sniper_atm + 100
+
+        ce_block_atm = fetch_row_metrics(final_atm_ce_strike)
+        ce_block_otm = fetch_row_metrics(final_otm_pe_strike)
+
+        pe_block_atm = fetch_row_metrics(final_atm_pe_strike)
+        pe_block_otm = fetch_row_metrics(final_otm_ce_strike)
+
+        # Final Sniper value calculation matching legacy formula
+        final_sniper_calculation = (ce_block_otm["PE_CLOSE"] + pe_block_otm["CE_CLOSE"]) / 2.0
+
+        # Capture diagnostic payload for all 3 strikes (ATM-100, ATM, ATM+100) -> 6 total rows
+        diag_strikes = [
+            final_sniper_atm - 100,
+            final_sniper_atm,
+            final_sniper_atm + 100
+        ]
+
+        sniper_diag_rows = []
+        for s in diag_strikes:
+            m = fetch_row_metrics(s)
+            if s < final_sniper_atm:
+                label_prefix = f"{s} OTM (-100)"
+            elif s > final_sniper_atm:
+                label_prefix = f"{s} OTM (+100)"
+            else:
+                label_prefix = f"{s} ATM"
+
+            # CE Row
+            sniper_diag_rows.append({
+                'strike_label': label_prefix,
+                'type': 'CE',
+                'close': m['CE_CLOSE'],
+                'sniper_val': final_sniper_calculation,
+                'diff': m['CE_CLOSE'] - final_sniper_calculation
+            })
+            # PE Row
+            sniper_diag_rows.append({
+                'strike_label': label_prefix,
+                'type': 'PE',
+                'close': m['PE_CLOSE'],
+                'sniper_val': final_sniper_calculation,
+                'diff': m['PE_CLOSE'] - final_sniper_calculation
+            })
 
         logger.info("Calculation complete. Returning metrics dictionary.")
         return {
@@ -434,4 +448,6 @@ class NiftyCalculatorEngine:
             'pe_block_atm': pe_block_atm,
             'pe_block_otm': pe_block_otm,
             "final_df": final_df,
+            'sniper_threshold_met': valid_strike_found,
+            'sniper_diag_rows': sniper_diag_rows
         }
