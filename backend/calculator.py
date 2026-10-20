@@ -35,10 +35,20 @@ class NiftyCalculatorEngine:
                     raw_date_str = date_match.group(1)
                     file_trade_date = datetime.strptime(raw_date_str, '%Y%m%d')
 
-                    # Calculate next working day
+                    # Define market holidays to skip
+                    market_holidays = {
+                        "20261020",
+                        "20261108",
+                        "20261110",
+                        "20261124",
+                        "20261225"
+                    }
+
+                    # Calculate next working day, skipping weekends and holidays
                     output_target_date = file_trade_date + timedelta(days=1)
-                    while output_target_date.weekday() >= 5:
+                    while output_target_date.weekday() >= 5 or output_target_date.strftime('%Y%m%d') in market_holidays:
                         output_target_date += timedelta(days=1)
+
                     formatted_out_date = output_target_date.strftime('%Y%m%d')
                 else:
                     formatted_out_date = datetime.now().strftime('%Y%m%d')
@@ -379,12 +389,19 @@ class NiftyCalculatorEngine:
                 final_sniper_atm = sniper_atm_base + 50
                 logger.info(f"No strike met criteria. Defaulting to base + 50 strike: {final_sniper_atm}")
 
+        # Correct block definitions for UI display matching ATM and OTM pairs
         ce_block_atm = fetch_row_metrics(final_sniper_atm)
-        ce_block_otm = fetch_row_metrics(final_sniper_atm - 100)
+        ce_block_otm = fetch_row_metrics(final_sniper_atm + 100)  # OTM Call strike (+100)
         pe_block_atm = fetch_row_metrics(final_sniper_atm)
-        pe_block_otm = fetch_row_metrics(final_sniper_atm + 100)
+        pe_block_otm = fetch_row_metrics(final_sniper_atm - 100)  # OTM Put strike (-100)
+
+        # Fetch metrics explicitly for the calculation
+        otm_ce_metrics = ce_block_otm
+        otm_pe_metrics = pe_block_otm
+
+        # Correct Sniper calculation: (OTM CE Close + OTM PE Close) / 2
         final_sniper_calculation = (
-                                           ce_block_otm['PE_CLOSE'] + pe_block_atm['CE_CLOSE']
+                                           otm_ce_metrics['CE_CLOSE'] + otm_pe_metrics['PE_CLOSE']
                                    ) / 2.0
 
         logger.info("Calculation complete. Returning metrics dictionary.")
