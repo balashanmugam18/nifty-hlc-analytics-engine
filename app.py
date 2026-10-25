@@ -5,7 +5,7 @@ import pandas as pd
 import pytz
 import streamlit as st
 
-from services.nse_scheduler import fetch_nse_bhavcopy_for_date, process_uploaded_bhavcopy_file, load_cache
+from backend.calculator import fetch_nse_bhavcopy_for_date, process_uploaded_bhavcopy_file, load_cache
 
 st.set_page_config(page_title="HLC Nifty Analysis Dashboard", layout="wide")
 

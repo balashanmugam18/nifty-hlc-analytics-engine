@@ -3,7 +3,7 @@ import logging
 import os
 import pickle
 import pytz
-from services.nse_scheduler import fetch_nse_bhavcopy_for_date,CACHE_FILE
+from backend.calculator import fetch_nse_bhavcopy_for_date,CACHE_FILE
 
 # CACHE_FILE = "server_cache_metrics.pkl"
 
