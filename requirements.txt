@@ -4,3 +4,7 @@ openpyxl
 requests
 apscheduler
 pytz
+sqlalchemy
+psycopg2-binary
+psycopg[binary]
+python-dotenv

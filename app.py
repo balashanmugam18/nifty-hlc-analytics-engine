@@ -1,31 +1,32 @@
-from datetime import datetime, timedelta
-import os
-import pickle
+from datetime import datetime
+import logging
 import pandas as pd
-import pytz
 import streamlit as st
 
-from backend.calculator import fetch_nse_bhavcopy_for_date, process_uploaded_bhavcopy_file, load_cache
+from backend.calculator import (
+    fetch_nse_bhavcopy_for_date,
+    process_uploaded_bhavcopy_file,
+    load_cache,
+)
+from database.db_handler import load_active_weekly_levels_from_db
+from database.db_models import init_db
+
+# Configure root logger to output INFO level logs to the terminal
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger(__name__)
 
 st.set_page_config(page_title="HLC Nifty Analysis Dashboard", layout="wide")
 
-ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-CACHE_FILE = os.path.join(ROOT_DIR, "server_cache_metrics.pkl")
+# Ensure database schema & tables are initialized on startup
+init_db()
 
-
-def load_from_server_cache():
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "rb") as f:
-                data = pickle.load(f)
-                ist = pytz.timezone('Asia/Kolkata')
-                if datetime.now(ist) - data["timestamp"] > timedelta(hours=24):
-                    os.remove(CACHE_FILE)
-                    return None
-                return data
-        except Exception:
-            return None
-    return None
+# Initialize session state for active target date tracking
+if "active_target_date" not in st.session_state:
+    st.session_state["active_target_date"] = None
 
 
 # Formatting helper to ensure all table values are strings (prevents Arrow crashes)
@@ -119,8 +120,18 @@ else:
         st.markdown("**Fetch Direct from NSE**")
         if st.button("🚀 Fetch Latest Bhavcopy from NSE Now"):
             with st.spinner("Checking cache and connecting to NSE..."):
-                success, message = fetch_nse_bhavcopy_for_date(enable_weekly_zone=enable_weekly)
+                result = fetch_nse_bhavcopy_for_date(
+                    enable_weekly_zone=enable_weekly
+                )
+
+                # Unpack tuple safely (handles 2 or 3 returned items)
+                success = result[0]
+                message = result[1]
+                t_date = result[2] if len(result) > 2 else None
+
                 if success:
+                    if t_date:
+                        st.session_state["active_target_date"] = t_date
                     st.success(message)
                     st.rerun()
                 else:
@@ -130,17 +141,31 @@ else:
     with col2:
         st.markdown("**Upload Bhavcopy ZIP**")
         uploaded_file = st.file_uploader(
-            "Choose ZIP File", type=["zip"], key="bhav_uploader", label_visibility="collapsed"
+            "Choose ZIP File",
+            type=["zip"],
+            key="bhav_uploader",
+            label_visibility="collapsed",
         )
 
         if uploaded_file is not None:
             if st.button("📥 Process Uploaded File"):
                 with st.spinner("Processing uploaded Bhavcopy..."):
                     file_bytes = uploaded_file.read()
-                    success, message = process_uploaded_bhavcopy_file(
-                        file_bytes, uploaded_file.name, enable_weekly_zone=enable_weekly, pdc_threshold=pdc_thresh
+                    result = process_uploaded_bhavcopy_file(
+                        file_bytes,
+                        uploaded_file.name,
+                        enable_weekly_zone=enable_weekly,
+                        pdc_threshold=pdc_thresh,
                     )
+
+                    # Unpack tuple safely (handles 2 or 3 returned items)
+                    success = result[0]
+                    message = result[1]
+                    t_date = result[2] if len(result) > 2 else None
+
                     if success:
+                        if t_date:
+                            st.session_state["active_target_date"] = t_date
                         st.success(message)
                         st.rerun()
                     else:
@@ -149,28 +174,34 @@ else:
 # ==============================================================================
 # 4. DASHBOARD UI DISPLAY
 # ==============================================================================
-cached_data = load_from_server_cache()
+# Load cache using the session's active target date
+cached_data = load_cache(target_date=st.session_state.get("active_target_date"))
 
 st.markdown("---")
 
 if cached_data is None:
+    logger.info("🖥️ [UI Display] Rendering state: No active cache found in DB (Showing empty state banner).")
     st.info(
-        "📌 **No Bhavcopy loaded yet. Click 'Fetch Latest Bhavcopy from"
+        "📌 **No Bhavcopy loaded in database yet. Click 'Fetch Latest Bhavcopy from"
         " NSE Now' above or upload a ZIP file to view analytics.**"
     )
 else:
     m = cached_data["metrics"]
     excel_bytes = cached_data["excel_bytes"]
-    output_filename = m.get("output_filename", "Nifty_ATM_Analysis")
+    output_filename = cached_data.get("file_name", m.get("output_filename", "Nifty_ATM_Analysis"))
+    target_date_val = cached_data.get("target_date", "N/A")
 
     try:
         clean_name = output_filename.split(".")[0]
-        date_str_raw = clean_name.split("_")[-1]
+        date_str_raw = cached_data.get("file_date", clean_name.split("_")[-1])
         formatted_date = datetime.strptime(date_str_raw, "%Y%m%d").strftime(
             "%d/%m/%Y"
         )
     except Exception:
         formatted_date = "N/A"
+
+    logger.info(
+        f"🖥️ [UI Display Success] Rendering Dashboard for Target Date: {target_date_val} | Active File: {output_filename} | Formatted Date: {formatted_date}")
 
     st.success(
         f"📊 **Active Analytics Report:** `{output_filename}`  \n🗓️ **Date:**"
@@ -181,7 +212,7 @@ else:
     st.subheader("Key Strategy Metrics")
     pdc_cas_display = (
         f"~~{fmt(m['nifty_close'])}~~"
-        if m["change_in_pdc_val"] != "---"
+        if m.get("change_in_pdc_val", "---") != "---"
         else fmt(m["nifty_close"])
     )
 
@@ -198,7 +229,7 @@ else:
         "Value": [
             fmt(m["max_resistance"]),
             fmt(m["min_resistance"]),
-            fmt(m["change_in_pdc_val"]),
+            fmt(m.get("change_in_pdc_val", "---")),
             pdc_cas_display,
             fmt(m["min_support"]),
             fmt(m["max_support"]),
@@ -247,18 +278,41 @@ else:
     # 3. WEEKLY RANGE METRICS
     if enable_weekly:
         st.subheader("Weekly Range Metrics")
-        weekly_labels = m.get("weekly_labels", [])
-        weekly_vals = m.get("weekly_calculated_values", [])
-        if weekly_labels and weekly_vals:
+        weekly_db_data = load_active_weekly_levels_from_db()
+
+        if weekly_db_data:
+            raw_date = weekly_db_data.get("target_date", "")
+            try:
+                formatted_calc_date = datetime.strptime(raw_date, "%Y%m%d").strftime("%d/%m/%Y")
+            except Exception:
+                formatted_calc_date = raw_date
+
+            st.info(
+                f"🗓️ **Active Weekly Levels Generated On:** `{formatted_calc_date}` "
+                f"| 🎯 **Target Expiry:** `{weekly_db_data.get('expiry_date')}`"
+            )
+
             weekly_df = pd.DataFrame({
-                "Weekly Range Level": weekly_labels,
-                "Calculated Value": [fmt(v) for v in weekly_vals],
+                "Weekly Range Level": [
+                    "Maximum Resistance",
+                    "Minimum Resistance",
+                    "Previous Weekly Close",
+                    "Minimum Support",
+                    "Maximum Support",
+                ],
+                "Calculated Value": [
+                    fmt(weekly_db_data["max_resistance"]),
+                    fmt(weekly_db_data["min_resistance"]),
+                    fmt(weekly_db_data["previous_weekly_close"]),
+                    fmt(weekly_db_data["min_support"]),
+                    fmt(weekly_db_data["max_support"]),
+                ],
             })
             st.table(weekly_df)
         else:
             st.warning(
-                "⚠️ Weekly zones were not calculated in the active dataset. Please"
-                " re-fetch or upload with 'Enable Weekly Zone Calculation' checked."
+                "⚠️ No active weekly levels found in the database. "
+                "Weekly levels will automatically update on the first post-expiry session."
             )
         st.markdown("---")
 
@@ -306,27 +360,29 @@ else:
         ),
     )
 
-    # Inside app.py
-    metrics = load_cache().get("metrics", {})
-    threshold_met = metrics.get('sniper_threshold_met', True)
-    diag_rows = metrics.get('sniper_diag_rows', [])
+    # Debug Sniper Difference Table
+    threshold_met = m.get("sniper_threshold_met", True)
+    diag_rows = m.get("sniper_diag_rows", [])
 
-    show_debug_table = st.sidebar.checkbox("Show Sniper Difference Metrics (Fallback Analysis)",
-                                           value=not threshold_met)
+    show_debug_table = st.sidebar.checkbox(
+        "Show Sniper Difference Metrics (Fallback Analysis)",
+        value=not threshold_met,
+    )
 
     if show_debug_table and diag_rows:
         st.warning(
-            "⚠️ Sniper Strategy: Showing 6-Row Difference Metrics Matrix:")
+            "⚠️ Sniper Strategy: Showing 6-Row Difference Metrics Matrix:"
+        )
 
         diff_df = pd.DataFrame([
             {
-                "Strike / Wing": row['strike_label'],
-                "Type": row['type'],
-                "Close Value": row['close'],
-                "Sniper Value": row['sniper_val'],
-                "Difference (Close - Sniper)": round(row['diff'], 2)
+                "Strike / Wing": row["strike_label"],
+                "Type": row["type"],
+                "Close Value": row["close"],
+                "Sniper Value": row["sniper_val"],
+                "Difference (Close - Sniper)": round(row["diff"], 2),
             }
             for row in diag_rows
         ])
 
-        st.dataframe(diff_df, use_container_width=True, hide_index=True)
+        st.dataframe(diff_df, width='stretch', hide_index=True)

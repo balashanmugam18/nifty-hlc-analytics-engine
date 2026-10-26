@@ -2,8 +2,6 @@ from datetime import datetime, timedelta
 import io
 import logging
 import math
-import os
-import pickle
 import pytz
 import re
 import zipfile
@@ -11,51 +9,76 @@ import pandas as pd
 import requests
 import time
 from services.transformer import DataTransformer
+from database.db_handler import (
+    save_daily_cache_to_db,
+    load_daily_cache_from_db,
+    evaluate_and_save_weekly_levels
+)
+from constants.market_constants import MARKET_HOLIDAYS
 
 logger = logging.getLogger(__name__)
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CACHE_FILE = os.path.join(ROOT_DIR, "server_cache_metrics.pkl")
 
 
-def load_cache():
-    """Universal cache loader helper."""
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "rb") as f:
-                return pickle.load(f)
-        except Exception as e:
-            logger.warning(f"Failed to read cache file: {e}")
+def load_cache(target_date=None):
+    try:
+        db_data = load_daily_cache_from_db(target_date=target_date)
+        if db_data:
+            return db_data
+    except Exception as e:
+        logger.warning(f"Failed to read cache from database: {e}")
     return None
 
+def check_if_target_date_exists_in_db(target_date_str):
+    """
+    Directly checks database to see if a report for this target date already exists.
+    """
+    try:
+        cached_record = load_daily_cache_from_db(target_date=target_date_str)
+        if cached_record:
+            return cached_record
+    except Exception as e:
+        logger.warning(f"Could not verify target date in DB: {e}")
+    return None
 
 def save_cache(metrics, excel_bytes, file_name, file_date_str, target_date_str):
-    """Universal cache writer helper storing both Bhavcopy file date and report target date."""
-    ist = pytz.timezone('Asia/Kolkata')
-    cache_data = {
-        "metrics": metrics,
-        "excel_bytes": excel_bytes,
-        "file_name": file_name,
-        "file_date": file_date_str,  # Exact Bhavcopy file date (e.g., 20261015)
-        "target_date": target_date_str,  # Resulting report trading date (e.g., 20261016)
-        "timestamp": datetime.now(pytz.utc).astimezone(ist),
-    }
-    with open(CACHE_FILE, "wb") as f:
-        pickle.dump(cache_data, f)
+    """
+    Universal cache writer helper storing both Bhavcopy file date and report target date
+    directly into PostgreSQL database.
+    """
+    try:
+        # Pass both file_date_str and target_date_str explicitly
+        save_daily_cache_to_db(metrics, excel_bytes, file_name, file_date_str, target_date_str)
+
+        evaluate_and_save_weekly_levels(metrics)
+        logger.info(f"Successfully saved cache and metrics to database for target date: {target_date_str}")
+    except Exception as e:
+        logger.error(f"Failed to save cache to database: {e}")
 
 
 def process_uploaded_bhavcopy_file(file_bytes, file_name, enable_weekly_zone=False, pdc_threshold=50):
-    """
-    Processes manually uploaded Bhavcopy ZIP file and caches it with pre-check.
-    """
     file_date_str = extract_date_from_filename(file_name)
+    if not file_date_str:
+        file_date_str = datetime.now(pytz.utc).astimezone(pytz.timezone('Asia/Kolkata')).strftime("%Y%m%d")
 
-    cached_data = load_cache()
-    if cached_data and file_date_str and cached_data.get("file_date") == file_date_str:
-        logger.info(f"✅ Cache hit: Bhavcopy file for {file_date_str} is already active in cache.")
-        return True, f"Bhavcopy for {file_date_str} is already active in cache."
+    # Determine target output date beforehand to check DB
+    file_trade_date = datetime.strptime(file_date_str, '%Y%m%d')
+    output_target_date = file_trade_date + timedelta(days=1)
+    while output_target_date.weekday() >= 5 or output_target_date.strftime('%Y%m%d') in MARKET_HOLIDAYS:
+        output_target_date += timedelta(days=1)
+    target_date_str = output_target_date.strftime('%Y%m%d')
+
+    logger.info(
+        f"📂 [Upload Triggered] File Name: {file_name} | File Date: {file_date_str} | Target Date: {target_date_str}")
+
+    # 🛑 SMART DB CHECK: If target date already exists in DB, skip reprocessing!
+    existing_record = check_if_target_date_exists_in_db(target_date_str)
+    if existing_record:
+        logger.info(
+            f"✅ Cache hit: Target date {target_date_str} is already stored in database. Skipping recalculation.")
+        return True, f"Bhavcopy for target date {target_date_str} is already present in database.", target_date_str
 
     try:
-        logger.info(f"Processing uploaded Bhavcopy file: {file_name}")
+        logger.info(f"Processing uploaded Bhavcopy file: {file_name} (Date: {file_date_str})")
         engine = NiftyCalculatorEngine(
             file_bytes, enable_weekly_zone=enable_weekly_zone, pdc_threshold=pdc_threshold
         )
@@ -64,26 +87,17 @@ def process_uploaded_bhavcopy_file(file_bytes, file_name, enable_weekly_zone=Fal
         transformer = DataTransformer(metrics)
         excel_bytes = transformer.generate_excel_bytes()
 
-        if not file_date_str:
-            file_date_str = datetime.now(pytz.utc).astimezone(pytz.timezone('Asia/Kolkata')).strftime("%Y%m%d")
-
-        output_filename = metrics.get("output_filename", "")
-        target_date_str = extract_date_from_filename(output_filename) or file_date_str
-
         save_cache(metrics, excel_bytes, file_name, file_date_str, target_date_str)
-        logger.info(f"Successfully processed and cached uploaded file: {file_name} (File Date: {file_date_str})")
-        return True, "Uploaded Bhavcopy processed and cached successfully!"
+
+        logger.info(
+            f"✅ [Upload Success] Uploaded Bhavcopy for date {file_date_str} processed and saved to DB successfully.")
+        return True, f"Bhavcopy for target date {target_date_str} processed and cached successfully!", target_date_str
 
     except Exception as e:
-        logger.error(f"Error processing uploaded file: {e}")
-        return False, f"Error processing file: {e}"
+        logger.error(f"❌ [Upload Error] Failed processing uploaded file {file_name}: {e}")
+        return False, f"Error processing file: {e}", None
 
 def fetch_nse_bhavcopy_for_date(target_date=None, enable_weekly_zone=False):
-    """
-    Connects to NSE India, handles Cloudflare cookie handshakes,
-    downloads the derivatives Bhavcopy ZIP for the specified target date,
-    processes the calculations, and caches the results to disk.
-    """
     ist = pytz.timezone('Asia/Kolkata')
 
     if target_date is None:
@@ -91,15 +105,22 @@ def fetch_nse_bhavcopy_for_date(target_date=None, enable_weekly_zone=False):
 
     file_date_str = target_date.strftime("%Y%m%d")
 
-    # Universal cache pre-check by file_date to prevent redundant downloads
-    cached_data = load_cache()
-    if cached_data and cached_data.get("file_date") == file_date_str:
-        logger.info(
-            f"✅ Cache hit: Bhavcopy file for {file_date_str} is already cached. Skipping download & calculation.")
-        return True, f"Bhavcopy for {file_date_str} is already present in cache."
+    # Calculate target trading date for this fetch
+    output_target_date = target_date + timedelta(days=1)
+    while output_target_date.weekday() >= 5 or output_target_date.strftime('%Y%m%d') in MARKET_HOLIDAYS:
+        output_target_date += timedelta(days=1)
+    target_date_str = output_target_date.strftime('%Y%m%d')
+
+    logger.info(f"🚀 [NSE Fetch Triggered] File Date: {file_date_str} | Target Date: {target_date_str}")
+
+    # 🛑 SMART DB CHECK: Skip downloading if target date already exists in DB
+    existing_record = check_if_target_date_exists_in_db(target_date_str)
+    if existing_record:
+        logger.info(f"✅ Cache hit: Target date {target_date_str} already exists in database. Skipping NSE download.")
+        return True, f"Bhavcopy for target date {target_date_str} is already present in database.", target_date_str
 
     url = f"https://nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_{file_date_str}_F_0000.csv.zip"
-    logger.info(f"Starting NSE Bhavcopy fetch for file date {file_date_str} (IST) from URL: {url}")
+    logger.info(f"Starting NSE Bhavcopy fetch from URL: {url}")
 
     try:
         session = requests.Session()
@@ -126,6 +147,7 @@ def fetch_nse_bhavcopy_for_date(target_date=None, enable_weekly_zone=False):
         if response.status_code == 200:
             file_bytes = response.content
             logger.info(f"Successfully downloaded {len(file_bytes)} bytes. Processing metrics...")
+            file_name = f"BhavCopy_NSE_FO_0_0_0_{file_date_str}_F_0000.csv.zip"
 
             engine = NiftyCalculatorEngine(
                 file_bytes, enable_weekly_zone=enable_weekly_zone, pdc_threshold=50
@@ -135,20 +157,21 @@ def fetch_nse_bhavcopy_for_date(target_date=None, enable_weekly_zone=False):
             transformer = DataTransformer(metrics)
             excel_bytes = transformer.generate_excel_bytes()
 
-            output_filename = metrics.get("output_filename", "")
-            target_date_str = extract_date_from_filename(output_filename) or file_date_str
-
-            file_name = f"BhavCopy_NSE_FO_0_0_0_{file_date_str}_F_0000.csv.zip"
             save_cache(metrics, excel_bytes, file_name, file_date_str, target_date_str)
 
-            logger.info(f"Successfully processed and cached Bhavcopy for file date {file_date_str}!")
-            return True, f"Successfully processed Bhavcopy for {file_date_str}!"
+            logger.info(f"✅ [NSE Fetch Success] Bhavcopy for date {file_date_str} fetched and stored.")
+            return True, f"Successfully processed Bhavcopy for target date {target_date_str}!", target_date_str
         else:
-            return False, f"Bhavcopy not ready on NSE yet (HTTP Status: {response.status_code})."
+            return False, f"Bhavcopy not ready on NSE yet (HTTP Status: {response.status_code}).", None
 
     except Exception as e:
         logger.error(f"Error fetching from NSE: {e}")
-        return False, f"Error fetching from NSE: {e}"
+        return False, f"Error fetching from NSE: {e}", None
+
+
+
+
+
 
 def extract_date_from_filename(filename):
     """Helper to extract YYYYMMDD from NSE bhavcopy filename format."""
@@ -208,18 +231,9 @@ class NiftyCalculatorEngine:
                     raw_date_str = date_match.group(1)
                     file_trade_date = datetime.strptime(raw_date_str, '%Y%m%d')
 
-                    # Define market holidays to skip
-                    market_holidays = {
-                        "20261020",
-                        "20261108",
-                        "20261110",
-                        "20261124",
-                        "20261225"
-                    }
-
                     # Calculate next working day, skipping weekends and holidays
                     output_target_date = file_trade_date + timedelta(days=1)
-                    while output_target_date.weekday() >= 5 or output_target_date.strftime('%Y%m%d') in market_holidays:
+                    while output_target_date.weekday() >= 5 or output_target_date.strftime('%Y%m%d') in MARKET_HOLIDAYS:
                         output_target_date += timedelta(days=1)
 
                     formatted_out_date = output_target_date.strftime('%Y%m%d')
@@ -489,11 +503,11 @@ class NiftyCalculatorEngine:
 
             # Exact array sequence matching legacy version
             weekly_calculated_values = [
-                line4,          # Maximum Resistance
-                line1,          # Minimum Resistance
-                weekly_pdc,     # Previous Day Close (PDC)
-                line2,          # Minimum Support
-                line3,          # Maximum Support
+                line4,  # Maximum Resistance
+                line1,  # Minimum Resistance
+                weekly_pdc,  # Previous Day Close (PDC)
+                line2,  # Minimum Support
+                line3,  # Maximum Support
             ]
         else:
             weekly_calculated_values = [None] * len(weekly_labels)
