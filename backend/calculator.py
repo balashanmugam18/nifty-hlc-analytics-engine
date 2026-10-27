@@ -2,12 +2,204 @@ from datetime import datetime, timedelta
 import io
 import logging
 import math
+import pytz
 import re
 import zipfile
 import pandas as pd
+import requests
+import time
+from services.transformer import DataTransformer
+from database.db_handler import (
+    save_daily_cache_to_db,
+    load_daily_cache_from_db,
+    evaluate_and_save_weekly_levels
+)
+from constants.market_constants import MARKET_HOLIDAYS
 
 logger = logging.getLogger(__name__)
 
+
+def load_cache(target_date=None):
+    try:
+        db_data = load_daily_cache_from_db(target_date=target_date)
+        if db_data:
+            return db_data
+    except Exception as e:
+        logger.warning(f"Failed to read cache from database: {e}")
+    return None
+
+def check_if_target_date_exists_in_db(target_date_str):
+    """
+    Directly checks database to see if a report for this target date already exists.
+    """
+    try:
+        cached_record = load_daily_cache_from_db(target_date=target_date_str)
+        if cached_record:
+            return cached_record
+    except Exception as e:
+        logger.warning(f"Could not verify target date in DB: {e}")
+    return None
+
+def save_cache(metrics, excel_bytes, file_name, file_date_str, target_date_str):
+    """
+    Universal cache writer helper storing both Bhavcopy file date and report target date
+    directly into PostgreSQL database.
+    """
+    try:
+        # Pass both file_date_str and target_date_str explicitly
+        save_daily_cache_to_db(metrics, excel_bytes, file_name, file_date_str, target_date_str)
+
+        evaluate_and_save_weekly_levels(metrics)
+        logger.info(f"Successfully saved cache and metrics to database for target date: {target_date_str}")
+    except Exception as e:
+        logger.error(f"Failed to save cache to database: {e}")
+
+
+def process_uploaded_bhavcopy_file(file_bytes, file_name, enable_weekly_zone=False, pdc_threshold=50):
+    file_date_str = extract_date_from_filename(file_name)
+    if not file_date_str:
+        file_date_str = datetime.now(pytz.utc).astimezone(pytz.timezone('Asia/Kolkata')).strftime("%Y%m%d")
+
+    # Determine target output date beforehand to check DB
+    file_trade_date = datetime.strptime(file_date_str, '%Y%m%d')
+    output_target_date = file_trade_date + timedelta(days=1)
+    while output_target_date.weekday() >= 5 or output_target_date.strftime('%Y%m%d') in MARKET_HOLIDAYS:
+        output_target_date += timedelta(days=1)
+    target_date_str = output_target_date.strftime('%Y%m%d')
+
+    logger.info(
+        f"📂 [Upload Triggered] File Name: {file_name} | File Date: {file_date_str} | Target Date: {target_date_str}")
+
+    # 🛑 SMART DB CHECK: If target date already exists in DB, skip reprocessing!
+    existing_record = check_if_target_date_exists_in_db(target_date_str)
+    if existing_record:
+        logger.info(
+            f"✅ Cache hit: Target date {target_date_str} is already stored in database. Skipping recalculation.")
+        return True, f"Bhavcopy for target date {target_date_str} is already present in database.", target_date_str
+
+    try:
+        logger.info(f"Processing uploaded Bhavcopy file: {file_name} (Date: {file_date_str})")
+        engine = NiftyCalculatorEngine(
+            file_bytes, enable_weekly_zone=enable_weekly_zone, pdc_threshold=pdc_threshold
+        )
+        metrics = engine.process_bhavcopy()
+
+        transformer = DataTransformer(metrics)
+        excel_bytes = transformer.generate_excel_bytes()
+
+        save_cache(metrics, excel_bytes, file_name, file_date_str, target_date_str)
+
+        logger.info(
+            f"✅ [Upload Success] Uploaded Bhavcopy for date {file_date_str} processed and saved to DB successfully.")
+        return True, f"Bhavcopy for target date {target_date_str} processed and cached successfully!", target_date_str
+
+    except Exception as e:
+        logger.error(f"❌ [Upload Error] Failed processing uploaded file {file_name}: {e}")
+        return False, f"Error processing file: {e}", None
+
+def fetch_nse_bhavcopy_for_date(target_date=None, enable_weekly_zone=False):
+    ist = pytz.timezone('Asia/Kolkata')
+
+    if target_date is None:
+        target_date = get_expected_bhavcopy_target_date()
+
+    file_date_str = target_date.strftime("%Y%m%d")
+
+    # Calculate target trading date for this fetch
+    output_target_date = target_date + timedelta(days=1)
+    while output_target_date.weekday() >= 5 or output_target_date.strftime('%Y%m%d') in MARKET_HOLIDAYS:
+        output_target_date += timedelta(days=1)
+    target_date_str = output_target_date.strftime('%Y%m%d')
+
+    logger.info(f"🚀 [NSE Fetch Triggered] File Date: {file_date_str} | Target Date: {target_date_str}")
+
+    # 🛑 SMART DB CHECK: Skip downloading if target date already exists in DB
+    existing_record = check_if_target_date_exists_in_db(target_date_str)
+    if existing_record:
+        logger.info(f"✅ Cache hit: Target date {target_date_str} already exists in database. Skipping NSE download.")
+        return True, f"Bhavcopy for target date {target_date_str} is already present in database.", target_date_str
+
+    url = f"https://nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_{file_date_str}_F_0000.csv.zip"
+    logger.info(f"Starting NSE Bhavcopy fetch from URL: {url}")
+
+    try:
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+                " like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            ),
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+            ),
+            "Accept-Language": "en-US,en;q=0.5",
+            "Referer": "https://www.nseindia.com/all-reports-derivatives",
+        })
+
+        logger.info("Visiting https://www.nseindia.com/all-reports-derivatives to establish session cookies...")
+        session.get("https://www.nseindia.com/all-reports-derivatives", timeout=10)
+        time.sleep(2)
+
+        logger.info("Downloading Bhavcopy ZIP...")
+        response = session.get(url, timeout=15)
+        logger.info(f"Response Status Code: {response.status_code}")
+
+        if response.status_code == 200:
+            file_bytes = response.content
+            logger.info(f"Successfully downloaded {len(file_bytes)} bytes. Processing metrics...")
+            file_name = f"BhavCopy_NSE_FO_0_0_0_{file_date_str}_F_0000.csv.zip"
+
+            engine = NiftyCalculatorEngine(
+                file_bytes, enable_weekly_zone=enable_weekly_zone, pdc_threshold=50
+            )
+            metrics = engine.process_bhavcopy()
+
+            transformer = DataTransformer(metrics)
+            excel_bytes = transformer.generate_excel_bytes()
+
+            save_cache(metrics, excel_bytes, file_name, file_date_str, target_date_str)
+
+            logger.info(f"✅ [NSE Fetch Success] Bhavcopy for date {file_date_str} fetched and stored.")
+            return True, f"Successfully processed Bhavcopy for target date {target_date_str}!", target_date_str
+        else:
+            return False, f"Bhavcopy not ready on NSE yet (HTTP Status: {response.status_code}).", None
+
+    except Exception as e:
+        logger.error(f"Error fetching from NSE: {e}")
+        return False, f"Error fetching from NSE: {e}", None
+
+
+def extract_date_from_filename(filename):
+    """Helper to extract YYYYMMDD from NSE bhavcopy filename format."""
+    match = re.search(r'(\d{8})', filename)
+    return match.group(1) if match else None
+
+def get_expected_bhavcopy_target_date():
+    """
+    Determines the correct NSE Bhavcopy file date based on the 20:45 (8:45 PM) IST cutoff.
+    - Before 20:45 IST: Returns previous trading day.
+    - After 20:45 IST: Returns today (if weekday), or preceding Friday if weekend.
+    """
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(pytz.utc).astimezone(ist)
+
+    # Cutoff time: 20:45 IST when NSE publishes the daily Bhavcopy
+    cutoff_time = datetime.now(ist).replace(hour=20, minute=45, second=0, microsecond=0).time()
+
+    if now.time() < cutoff_time:
+        target = now - timedelta(days=1)
+    else:
+        target = now
+
+    # Handle weekends (Saturday = 5, Sunday = 6)
+    if target.weekday() == 5:  # Saturday -> Friday
+        target = target - timedelta(days=1)
+    elif target.weekday() == 6:  # Sunday -> Friday
+        target = target - timedelta(days=2)
+    elif target.weekday() == 0 and now.time() < cutoff_time:  # Monday before cutoff -> Friday
+        target = target - timedelta(days=3)
+
+    return target
 
 class NiftyCalculatorEngine:
 
@@ -35,18 +227,9 @@ class NiftyCalculatorEngine:
                     raw_date_str = date_match.group(1)
                     file_trade_date = datetime.strptime(raw_date_str, '%Y%m%d')
 
-                    # Define market holidays to skip
-                    market_holidays = {
-                        "20261020",
-                        "20261108",
-                        "20261110",
-                        "20261124",
-                        "20261225"
-                    }
-
                     # Calculate next working day, skipping weekends and holidays
                     output_target_date = file_trade_date + timedelta(days=1)
-                    while output_target_date.weekday() >= 5 or output_target_date.strftime('%Y%m%d') in market_holidays:
+                    while output_target_date.weekday() >= 5 or output_target_date.strftime('%Y%m%d') in MARKET_HOLIDAYS:
                         output_target_date += timedelta(days=1)
 
                     formatted_out_date = output_target_date.strftime('%Y%m%d')
@@ -316,16 +499,16 @@ class NiftyCalculatorEngine:
 
             # Exact array sequence matching legacy version
             weekly_calculated_values = [
-                line4,          # Maximum Resistance
-                line1,          # Minimum Resistance
-                weekly_pdc,     # Previous Day Close (PDC)
-                line2,          # Minimum Support
-                line3,          # Maximum Support
+                line4,  # Maximum Resistance
+                line1,  # Minimum Resistance
+                weekly_pdc,  # Previous Day Close (PDC)
+                line2,  # Minimum Support
+                line3,  # Maximum Support
             ]
         else:
             weekly_calculated_values = [None] * len(weekly_labels)
 
-        # Step 8: Execute Sniper Strategy calculation matrix (Exact Legacy Loop)
+        # Step 8: Execute Sniper Strategy calculation matrix
         logger.info("Executing Sniper Strategy calculations...")
         sniper_atm_base = int(round(nifty_close / 100.0) * 100)
 
@@ -368,23 +551,26 @@ class NiftyCalculatorEngine:
 
         final_sniper_atm = current_atm
 
-        # Set final strikes and lock metrics matching legacy layout mapping
-        final_atm_ce_strike = final_sniper_atm
-        final_otm_pe_strike = final_sniper_atm - 100
+        ce_block_atm = fetch_row_metrics(final_sniper_atm)
+        ce_block_otm = fetch_row_metrics(final_sniper_atm - 100)
+        pe_block_atm = fetch_row_metrics(final_sniper_atm)
+        pe_block_otm = fetch_row_metrics(final_sniper_atm + 100)
 
-        final_atm_pe_strike = final_sniper_atm
-        final_otm_ce_strike = final_sniper_atm + 100
+        # Helper to calculate individual sniper value dynamically for any given strike s
+        def calculate_individual_sniper(s):
+            wing_pe = fetch_row_metrics(s - 100)
+            wing_ce = fetch_row_metrics(s + 100)
+            return (wing_pe["PE_CLOSE"] + wing_ce["CE_CLOSE"]) / 2.0
 
-        ce_block_atm = fetch_row_metrics(final_atm_ce_strike)
-        ce_block_otm = fetch_row_metrics(final_otm_pe_strike)
+        # Unique individual sniper calculation per strike
+        atm_sniper_val = calculate_individual_sniper(final_sniper_atm)
+        otm_pe_sniper_val = calculate_individual_sniper(final_sniper_atm - 100)
+        otm_ce_sniper_val = calculate_individual_sniper(final_sniper_atm + 100)
 
-        pe_block_atm = fetch_row_metrics(final_atm_pe_strike)
-        pe_block_otm = fetch_row_metrics(final_otm_ce_strike)
+        # Legacy global fallback
+        final_sniper_calculation = atm_sniper_val
 
-        # Final Sniper value calculation matching legacy formula
-        final_sniper_calculation = (ce_block_otm["PE_CLOSE"] + pe_block_otm["CE_CLOSE"]) / 2.0
-
-        # Capture diagnostic payload for all 3 strikes (ATM-100, ATM, ATM+100) -> 6 total rows
+        # Capture diagnostic payload for all 3 strikes with individual strike snipers
         diag_strikes = [
             final_sniper_atm - 100,
             final_sniper_atm,
@@ -394,6 +580,8 @@ class NiftyCalculatorEngine:
         sniper_diag_rows = []
         for s in diag_strikes:
             m = fetch_row_metrics(s)
+            ind_sniper = calculate_individual_sniper(s)
+
             if s < final_sniper_atm:
                 label_prefix = f"{s} OTM (-100)"
             elif s > final_sniper_atm:
@@ -406,16 +594,16 @@ class NiftyCalculatorEngine:
                 'strike_label': label_prefix,
                 'type': 'CE',
                 'close': m['CE_CLOSE'],
-                'sniper_val': final_sniper_calculation,
-                'diff': m['CE_CLOSE'] - final_sniper_calculation
+                'sniper_val': ind_sniper,
+                'diff': m['CE_CLOSE'] - ind_sniper
             })
             # PE Row
             sniper_diag_rows.append({
                 'strike_label': label_prefix,
                 'type': 'PE',
                 'close': m['PE_CLOSE'],
-                'sniper_val': final_sniper_calculation,
-                'diff': m['PE_CLOSE'] - final_sniper_calculation
+                'sniper_val': ind_sniper,
+                'diff': m['PE_CLOSE'] - ind_sniper
             })
 
         logger.info("Calculation complete. Returning metrics dictionary.")
@@ -443,6 +631,9 @@ class NiftyCalculatorEngine:
             'weekly_calculated_values': weekly_calculated_values,
             'final_sniper_atm': final_sniper_atm,
             'final_sniper_calculation': final_sniper_calculation,
+            'atm_sniper_val': atm_sniper_val,
+            'otm_pe_sniper_val': otm_pe_sniper_val,
+            'otm_ce_sniper_val': otm_ce_sniper_val,
             'ce_block_atm': ce_block_atm,
             'ce_block_otm': ce_block_otm,
             'pe_block_atm': pe_block_atm,
