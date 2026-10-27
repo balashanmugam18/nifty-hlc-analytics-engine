@@ -169,10 +169,6 @@ def fetch_nse_bhavcopy_for_date(target_date=None, enable_weekly_zone=False):
         return False, f"Error fetching from NSE: {e}", None
 
 
-
-
-
-
 def extract_date_from_filename(filename):
     """Helper to extract YYYYMMDD from NSE bhavcopy filename format."""
     match = re.search(r'(\d{8})', filename)
@@ -512,7 +508,7 @@ class NiftyCalculatorEngine:
         else:
             weekly_calculated_values = [None] * len(weekly_labels)
 
-        # Step 8: Execute Sniper Strategy calculation matrix (Exact Legacy Loop)
+        # Step 8: Execute Sniper Strategy calculation matrix
         logger.info("Executing Sniper Strategy calculations...")
         sniper_atm_base = int(round(nifty_close / 100.0) * 100)
 
@@ -555,23 +551,26 @@ class NiftyCalculatorEngine:
 
         final_sniper_atm = current_atm
 
-        # Set final strikes and lock metrics matching legacy layout mapping
-        final_atm_ce_strike = final_sniper_atm
-        final_otm_pe_strike = final_sniper_atm - 100
+        ce_block_atm = fetch_row_metrics(final_sniper_atm)
+        ce_block_otm = fetch_row_metrics(final_sniper_atm - 100)
+        pe_block_atm = fetch_row_metrics(final_sniper_atm)
+        pe_block_otm = fetch_row_metrics(final_sniper_atm + 100)
 
-        final_atm_pe_strike = final_sniper_atm
-        final_otm_ce_strike = final_sniper_atm + 100
+        # Helper to calculate individual sniper value dynamically for any given strike s
+        def calculate_individual_sniper(s):
+            wing_pe = fetch_row_metrics(s - 100)
+            wing_ce = fetch_row_metrics(s + 100)
+            return (wing_pe["PE_CLOSE"] + wing_ce["CE_CLOSE"]) / 2.0
 
-        ce_block_atm = fetch_row_metrics(final_atm_ce_strike)
-        ce_block_otm = fetch_row_metrics(final_otm_pe_strike)
+        # Unique individual sniper calculation per strike
+        atm_sniper_val = calculate_individual_sniper(final_sniper_atm)
+        otm_pe_sniper_val = calculate_individual_sniper(final_sniper_atm - 100)
+        otm_ce_sniper_val = calculate_individual_sniper(final_sniper_atm + 100)
 
-        pe_block_atm = fetch_row_metrics(final_atm_pe_strike)
-        pe_block_otm = fetch_row_metrics(final_otm_ce_strike)
+        # Legacy global fallback
+        final_sniper_calculation = atm_sniper_val
 
-        # Final Sniper value calculation matching legacy formula
-        final_sniper_calculation = (ce_block_otm["PE_CLOSE"] + pe_block_otm["CE_CLOSE"]) / 2.0
-
-        # Capture diagnostic payload for all 3 strikes (ATM-100, ATM, ATM+100) -> 6 total rows
+        # Capture diagnostic payload for all 3 strikes with individual strike snipers
         diag_strikes = [
             final_sniper_atm - 100,
             final_sniper_atm,
@@ -581,6 +580,8 @@ class NiftyCalculatorEngine:
         sniper_diag_rows = []
         for s in diag_strikes:
             m = fetch_row_metrics(s)
+            ind_sniper = calculate_individual_sniper(s)
+
             if s < final_sniper_atm:
                 label_prefix = f"{s} OTM (-100)"
             elif s > final_sniper_atm:
@@ -593,16 +594,16 @@ class NiftyCalculatorEngine:
                 'strike_label': label_prefix,
                 'type': 'CE',
                 'close': m['CE_CLOSE'],
-                'sniper_val': final_sniper_calculation,
-                'diff': m['CE_CLOSE'] - final_sniper_calculation
+                'sniper_val': ind_sniper,
+                'diff': m['CE_CLOSE'] - ind_sniper
             })
             # PE Row
             sniper_diag_rows.append({
                 'strike_label': label_prefix,
                 'type': 'PE',
                 'close': m['PE_CLOSE'],
-                'sniper_val': final_sniper_calculation,
-                'diff': m['PE_CLOSE'] - final_sniper_calculation
+                'sniper_val': ind_sniper,
+                'diff': m['PE_CLOSE'] - ind_sniper
             })
 
         logger.info("Calculation complete. Returning metrics dictionary.")
@@ -630,6 +631,9 @@ class NiftyCalculatorEngine:
             'weekly_calculated_values': weekly_calculated_values,
             'final_sniper_atm': final_sniper_atm,
             'final_sniper_calculation': final_sniper_calculation,
+            'atm_sniper_val': atm_sniper_val,
+            'otm_pe_sniper_val': otm_pe_sniper_val,
+            'otm_ce_sniper_val': otm_ce_sniper_val,
             'ce_block_atm': ce_block_atm,
             'ce_block_otm': ce_block_otm,
             'pe_block_atm': pe_block_atm,
