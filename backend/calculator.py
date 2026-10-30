@@ -8,6 +8,7 @@ import zipfile
 import pandas as pd
 import requests
 import time
+from curl_cffi import requests as impersonate_requests
 from services.transformer import DataTransformer
 from database.db_handler import (
     save_daily_cache_to_db,
@@ -122,24 +123,43 @@ def fetch_nse_bhavcopy_for_date(target_date=None, enable_weekly_zone=False):
     url = f"https://nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_{file_date_str}_F_0000.csv.zip"
     logger.info(f"Starting NSE Bhavcopy fetch from URL: {url}")
 
+    # try:
+    #     session = requests.Session()
+    #     session.headers.update({
+    #         "User-Agent": (
+    #             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+    #             " like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    #         ),
+    #         "Accept": (
+    #             "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+    #         ),
+    #         "Accept-Language": "en-US,en;q=0.5",
+    #         "Referer": "https://www.nseindia.com/all-reports-derivatives",
+    #     })
+    #
+    #     logger.info("Visiting https://www.nseindia.com/all-reports-derivatives to establish session cookies...")
+    #     session.get("https://www.nseindia.com/all-reports-derivatives", timeout=10)
+    #     time.sleep(2)
+    #
+    #     logger.info("Downloading Bhavcopy ZIP...")
+    #     response = session.get(url, timeout=15)
+    #     logger.info(f"Response Status Code: {response.status_code}")
     try:
-        session = requests.Session()
+        # Impersonate a real Chrome 120 browser at the TLS/socket level
+        session = impersonate_requests.Session(impersonate="chrome120")
         session.headers.update({
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
-                " like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            ),
-            "Accept": (
-                "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
-            ),
-            "Accept-Language": "en-US,en;q=0.5",
-            "Referer": "https://www.nseindia.com/all-reports-derivatives",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.nseindia.com/",
         })
 
-        logger.info("Visiting https://www.nseindia.com/all-reports-derivatives to establish session cookies...")
-        session.get("https://www.nseindia.com/all-reports-derivatives", timeout=10)
+        # Step 1: Visit home page to gather initial cookies
+        logger.info("Visiting homepage to establish TLS & session cookies...")
+        session.get("https://www.nseindia.com/", timeout=10)
         time.sleep(2)
 
+        # Step 2: Download Bhavcopy ZIP
         logger.info("Downloading Bhavcopy ZIP...")
         response = session.get(url, timeout=15)
         logger.info(f"Response Status Code: {response.status_code}")
