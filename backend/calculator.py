@@ -196,28 +196,22 @@ def extract_date_from_filename(filename):
 
 def get_expected_bhavcopy_target_date():
     """
-    Determines the correct NSE Bhavcopy file date based on the 20:45 (8:45 PM) IST cutoff.
-    - Before 20:45 IST: Returns previous trading day.
-    - After 20:45 IST: Returns today (if weekday), or preceding Friday if weekend.
+    Determines the correct NSE Bhavcopy file date by stepping backward from now
+    until it finds the most recent valid trading day whose 20:45 (8:45 PM) IST
+    publishing cutoff has already passed, automatically skipping weekends and holidays.
     """
     ist = pytz.timezone('Asia/Kolkata')
     now = datetime.now(pytz.utc).astimezone(ist)
 
-    # Cutoff time: 20:45 IST when NSE publishes the daily Bhavcopy
-    cutoff_time = datetime.now(ist).replace(hour=20, minute=45, second=0, microsecond=0).time()
+    # Cutoff time: 20:45 IST
+    cutoff_time = now.replace(hour=20, minute=45, second=0, microsecond=0).time()
 
-    if now.time() < cutoff_time:
-        target = now - timedelta(days=1)
-    else:
-        target = now
+    # If it's before 8:45 PM, start checking from yesterday. Otherwise start from today.
+    target = now if now.time() >= cutoff_time else now - timedelta(days=1)
 
-    # Handle weekends (Saturday = 5, Sunday = 6)
-    if target.weekday() == 5:  # Saturday -> Friday
-        target = target - timedelta(days=1)
-    elif target.weekday() == 6:  # Sunday -> Friday
-        target = target - timedelta(days=2)
-    elif target.weekday() == 0 and now.time() < cutoff_time:  # Monday before cutoff -> Friday
-        target = target - timedelta(days=3)
+    # Step backward until we land on a valid trading day (not a weekend and not a holiday)
+    while target.weekday() >= 5 or target.strftime('%Y%m%d') in MARKET_HOLIDAYS:
+        target -= timedelta(days=1)
 
     return target
 
